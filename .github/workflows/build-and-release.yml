@@ -1,0 +1,203 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runtime:
+          - win-x64
+          - linux-x64
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Restore dependencies
+      run: dotnet restore
+
+    - name: Get version from csproj
+      id: get-version
+      run: |
+        VERSION=$(grep -oP '<Version>\K[^<]*' env-swap.csproj || echo "1.0.0")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Version found: $VERSION"
+
+    - name: Build
+      run: |
+        dotnet publish -r ${{ matrix.runtime }} \
+          -o ./publish/${{ matrix.runtime }}
+
+
+    - name: Create archive and checksums (Windows)
+      if: matrix.runtime == 'win-x64'
+      run: |
+        cd ./publish/${{ matrix.runtime }}
+        # Create archive
+        zip -r ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.zip env-swap.exe
+        # Create checksums
+        sha256sum env-swap.exe > ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.exe.sha256
+        sha256sum ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.zip > ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.zip.sha256
+        # Copy executable for direct download
+        cp env-swap.exe ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.exe
+        
+    - name: Create archive and checksums (Linux)
+      if: matrix.runtime == 'linux-x64'
+      run: |
+        cd ./publish/${{ matrix.runtime }}
+        # Create archive
+        tar -czf ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.tar.gz env-swap
+        # Create checksums
+        sha256sum env-swap > ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.sha256
+        sha256sum ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.tar.gz > ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.tar.gz.sha256
+        # Copy executable for direct download
+        cp env-swap ../../env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}
+
+    - name: Upload Windows artifacts
+      if: matrix.runtime == 'win-x64'
+      uses: actions/upload-artifact@v4
+      with:
+        name: env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}
+        path: |
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.zip
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.zip.sha256
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.exe
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.exe.sha256
+
+    - name: Upload Linux artifacts
+      if: matrix.runtime == 'linux-x64'
+      uses: actions/upload-artifact@v4
+      with:
+        name: env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}
+        path: |
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.tar.gz
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.tar.gz.sha256
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}
+          env-swap-${{ steps.get-version.outputs.version }}-${{ matrix.runtime }}.sha256
+
+  check-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-version.outputs.version }}
+      should-release: ${{ steps.check-tag.outputs.should-release }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Get version from csproj
+      id: get-version
+      run: |
+        VERSION=$(grep -oP '<Version>\K[^<]*' env-swap.csproj || echo "1.0.0")
+        echo "version=$VERSION" >> $GITHUB_OUTPUT
+        echo "Current version: $VERSION"
+
+    - name: Check if tag exists
+      id: check-tag
+      run: |
+        if git rev-parse "v${{ steps.get-version.outputs.version }}" >/dev/null 2>&1; then
+          echo "should-release=false" >> $GITHUB_OUTPUT
+          echo "Tag v${{ steps.get-version.outputs.version }} already exists"
+        else
+          echo "should-release=true" >> $GITHUB_OUTPUT
+          echo "Tag v${{ steps.get-version.outputs.version }} does not exist, will create release"
+        fi
+
+  release:
+    needs: [build, check-version]
+    runs-on: ubuntu-latest
+    if: needs.check-version.outputs.should-release == 'true' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Create and push tag
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+        git tag v${{ needs.check-version.outputs.version }}
+        git push origin v${{ needs.check-version.outputs.version }}
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -la ./artifacts/
+
+    - name: Setup .NET for help generation
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: '9.0.x'
+
+    - name: Build and generate usage help
+      id: get-help
+      run: |
+        dotnet publish -r linux-x64 -o ./temp-build
+        chmod +x ./temp-build/env-swap
+        HELP_OUTPUT=$(./temp-build/env-swap --help 2>&1 || echo "Help command failed")
+        echo "USAGE_HELP<<EOF" >> $GITHUB_OUTPUT
+        echo "$HELP_OUTPUT" >> $GITHUB_OUTPUT
+        echo "EOF" >> $GITHUB_OUTPUT
+        rm -rf ./temp-build
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        name: Release v${{ needs.check-version.outputs.version }}
+        tag_name: v${{ needs.check-version.outputs.version }}
+        generate_release_notes: true
+        files: |
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-win-x64/env-swap-${{ needs.check-version.outputs.version }}-win-x64.zip
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-win-x64/env-swap-${{ needs.check-version.outputs.version }}-win-x64.zip.sha256
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-win-x64/env-swap-${{ needs.check-version.outputs.version }}-win-x64.exe
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-win-x64/env-swap-${{ needs.check-version.outputs.version }}-win-x64.exe.sha256
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-linux-x64/env-swap-${{ needs.check-version.outputs.version }}-linux-x64.tar.gz
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-linux-x64/env-swap-${{ needs.check-version.outputs.version }}-linux-x64.tar.gz.sha256
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-linux-x64/env-swap-${{ needs.check-version.outputs.version }}-linux-x64
+          ./artifacts/env-swap-${{ needs.check-version.outputs.version }}-linux-x64/env-swap-${{ needs.check-version.outputs.version }}-linux-x64.sha256
+        body: |
+          ## env-swap v${{ needs.check-version.outputs.version }}
+          
+          Environment file swapper utility for quick switching between .env files.
+          
+          ### Installation
+          
+          **Windows:**
+          1. Download `env-swap-${{ needs.check-version.outputs.version }}-win-x64.zip`
+          2. Extract `env-swap.exe` to a directory in your PATH
+          3. Run `env-swap --help` to get started
+          
+          **Linux:**
+          1. Download `env-swap-${{ needs.check-version.outputs.version }}-linux-x64.tar.gz`
+          2. Extract: `tar -xzf env-swap-${{ needs.check-version.outputs.version }}-linux-x64.tar.gz`
+          3. Make executable: `chmod +x env-swap`
+          4. Move to PATH: `sudo mv env-swap /usr/local/bin/`
+          5. Run `env-swap --help` to get started
+          
+          ### Usage Instructions (auto-generated from `--help`)
+          ```
+          ${{ steps.get-help.outputs.USAGE_HELP }}
+          ```
+          
+          ### What's Changed
+          - Full changelog available in commit history
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
