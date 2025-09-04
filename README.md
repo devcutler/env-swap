@@ -25,6 +25,21 @@ alias envs='./env-swap'
 
 ## Usage
 
+```
+$ env-swap --help
+Usage:
+  env-swap [environment] [options]                 - Switch to environment
+  env-swap --add [name] [path] [--allow-missing]   - Add environment file path
+  env-swap --remove [name] [path]                  - Remove environment file path
+  env-swap --list                                  - List all available environments
+
+Options:
+  --local            Copy to .env.local
+  --target [name]    Custom target filename
+  --allow-missing    Add non-existent files
+  --help, -h         Show this help
+```
+
 ### Add environment files
 
 ```bash
@@ -37,6 +52,13 @@ Add files that don't exist yet:
 
 ```bash
 env-swap --add test .env.test --allow-missing
+```
+
+### Remove environment files
+
+```bash
+env-swap --remove dev .env.dev
+env-swap --remove prod .env.prod
 ```
 
 ### List environments
@@ -60,11 +82,11 @@ Switch to `.env.local`:
 env-swap dev --local
 ```
 
-Switch to custom target file:
+Switch to custom target filename:
 
 ```bash
-env-swap prod config/app.env
-env-swap staging docker/.env
+env-swap prod --target .env.testing
+env-swap staging --target .env.backup
 ```
 
 ### Monorepo support
@@ -95,8 +117,8 @@ env-swap prod       # Copies .env.prod to .env
 # Use local development
 env-swap dev --local # Copies .env.dev to .env.local
 
-# Custom target
-env-swap prod docker/.env # Copies .env.prod to docker/.env
+# Custom target filename
+env-swap prod --target .env.testing # Copies prod files to .env.testing in each directory
 
 # Check what's available
 env-swap --list
@@ -108,8 +130,20 @@ Environment mappings are stored in `.env.json`:
 
 ```json
 {
-  "dev": [".env.dev"],
-  "prod": [".env.prod"],
-  "staging": [".env.staging"]
+  "dev": [
+    ".env.dev",
+    "api/.env.dev",
+    "web/.env.dev"
+  ],
+  "prod": [
+    ".env.production", // filenames don't need to be the same as env name
+    "api/.env.prod",
+    "web/.env.prod"
+  ],
+  "staging": [
+    ".env.staging",
+    "api/.env.staging",
+    "web/.env.staging"
+  ]
 }
 ```
